@@ -292,26 +292,6 @@ VideoCaptioner/
 
 4. 填入 YouTube 链接时进行处理时，会自动下载视频的字幕，从而省去转录步骤，极大地节省操作时间。
 
-## 🤝 贡献指南
-
-项目在不断完善中，如果在使用过程遇到的Bug，欢迎提交 [Issue](https://github.com/WEIFENG2333/VideoCaptioner/issues) 和 Pull Request 帮助改进项目。
-
-## 📝 更新日志
-
-查看完整的更新历史，请访问 [CHANGELOG.md](./CHANGELOG.md)
-
 ## 💖 支持作者
 
-如果觉得项目对你有帮助，可以给项目点个Star！
-
-<details>
-<summary>捐助支持</summary>
-<div align="center">
-  <img src="./legacy-docs/images/alipay.jpg" alt="支付宝二维码" width="30%">
-  <img src="./legacy-docs/images/wechat.jpg" alt="微信二维码" width="30%">
-</div>
-</details>
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=WEIFENG2333/VideoCaptioner&type=Date)](https://star-history.com/#WEIFENG2333/VideoCaptioner&Date)
+如果觉得项目对你有帮助，可以给[原项目](https://github.com/WEIFENG2333/VideoCaptioner)点个Star！
