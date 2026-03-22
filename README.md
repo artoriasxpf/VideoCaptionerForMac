@@ -2,12 +2,6 @@
   <img src="./legacy-docs/images/logo.png"alt="VideoCaptioner Logo" width="100">
   <p>卡卡字幕助手 Mac版</p>
   <h1>VideoCaptionerForMac</h1>
-  <p>一款基于大语言模型(LLM)的视频字幕处理助手，支持语音识别、字幕断句、优化、翻译全流程处理</p>
-
-简体中文 / [正體中文](./legacy-docs/README_TW.md) / [English](./legacy-docs/README_EN.md) / [日本語](./legacy-docs/README_JA.md)
-
-📚 **[在线文档](https://weifeng2333.github.io/VideoCaptioner/)** | 🚀 **[快速开始](https://weifeng2333.github.io/VideoCaptioner/guide/getting-started)** | ⚙️ **[配置指南](https://weifeng2333.github.io/VideoCaptioner/config/llm)**
-
 </div>
 
 ## 项目介绍
