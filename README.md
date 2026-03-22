@@ -1,7 +1,7 @@
 <div align="center">
   <img src="./legacy-docs/images/logo.png"alt="VideoCaptioner Logo" width="100">
-  <p>卡卡字幕助手</p>
-  <h1>VideoCaptioner</h1>
+  <p>卡卡字幕助手 Mac版</p>
+  <h1>VideoCaptionerForMac</h1>
   <p>一款基于大语言模型(LLM)的视频字幕处理助手，支持语音识别、字幕断句、优化、翻译全流程处理</p>
 
 简体中文 / [正體中文](./legacy-docs/README_TW.md) / [English](./legacy-docs/README_EN.md) / [日本語](./legacy-docs/README_JA.md)
@@ -12,7 +12,7 @@
 
 ## 项目介绍
 
-卡卡字幕助手（VideoCaptioner）操作简单且无需高配置，支持 API 和本地离线两种方式进行语音识别，利用大语言模型进行字幕智能断句、校正、翻译，字幕视频全流程一键处理。为视频配上效果惊艳的字幕。
+卡卡字幕助手Mac版（VideoCaptionerForMac）是基于VideoCaptioner改造的Mac版本，操作简单且无需高配置，支持 API 和本地离线两种方式进行语音识别，利用大语言模型进行字幕智能断句、校正、翻译，字幕视频全流程一键处理。为视频配上效果惊艳的字幕。
 
 - 支持词级时间戳与 VAD 语音活动检测，识别准确率高
 - 基于 LLM 的语义理解，自动将逐字字幕重组为自然流畅的句子段落
