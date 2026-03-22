@@ -12,95 +12,68 @@
 
 ## 项目介绍
 
-卡卡字幕助手Mac版（VideoCaptionerForMac）是基于VideoCaptioner改造的Mac版本，操作简单且无需高配置，支持 API 和本地离线两种方式进行语音识别，利用大语言模型进行字幕智能断句、校正、翻译，字幕视频全流程一键处理。为视频配上效果惊艳的字幕。
-
-- 支持词级时间戳与 VAD 语音活动检测，识别准确率高
-- 基于 LLM 的语义理解，自动将逐字字幕重组为自然流畅的句子段落
-- 结合上下文的 AI 翻译，支持反思优化机制，译文地道专业
-- 支持批量视频字幕合成，提升处理效率
-- 直观的字幕编辑查看界面，支持实时预览和快捷编辑
-
-## 界面预览
-
-<div align="center">
-  <img src="https://h1.appinn.me/file/1731487405884_main.png" alt="软件界面预览" width="90%" style="border-radius: 5px;">
-</div>
-
-![页面预览](https://h1.appinn.me/file/1731487410170_preview1.png)
-![页面预览](https://h1.appinn.me/file/1731487410832_preview2.png)
-
-## 测试
-
-全流程处理一个14分钟1080P的 [B站英文 TED 视频](https://www.bilibili.com/video/BV1jT411X7Dz)，调用本地 Whisper 模型进行语音识别，使用 `gpt-5-mini` 模型优化和翻译为中文，总共消耗时间约 **4 分钟**。
-
-近后台计算，模型优化和翻译消耗费用不足 ￥0.01（以OpenAI官方价格为计算）
-
-具体字幕和视频合成的效果的测试结果图片，请参考 [TED视频测试](./legacy-docs/test.md)
+卡卡字幕助手Mac版（VideoCaptionerForMac）是基于VideoCaptioner（1.3.38版本）改造的Mac版本，详细的功能feature请参考[VideoCaptioner](https://github.com/WEIFENG2333/VideoCaptioner)
 
 ## 快速开始
 
-### Windows 用户
-
-#### 方式一：使用打包程序（推荐）
-
-软件较为轻量，打包大小不足 60M,已集成所有必要环境，下载后可直接运行。
-
-1. 从 [Release](https://github.com/WEIFENG2333/VideoCaptioner/releases) 页面下载最新版本的可执行程序。或者：[蓝奏盘下载](https://wwwm.lanzoue.com/ii14G2pdsbej)
-
-2. 打开安装包进行安装
-
-3. LLM API 配置，（用于字幕断句、校正），可使用[本项目的中转站](https://api.videocaptioner.cn)
-
-4. 翻译配置，选择是否启用翻译，翻译服务（默认使用微软翻译，质量一般，推荐配置自己的 API KEY 使用大模型翻译）
-
-5. 语音识别配置（默认使用B接口网络调用语音识别服务，中英以外的语言请使用本地转录）
-
 ### macOS 用户
 
-#### 一键安装运行（推荐）
+#### 环境要求
 
-```bash
-# 方式一：直接运行（自动安装 uv、克隆项目、安装相关依赖）
-curl -fsSL https://raw.githubusercontent.com/WEIFENG2333/VideoCaptioner/main/scripts/run.sh | bash
+- Python 3.10 ~ 3.12
+- [Homebrew](https://brew.sh/)（用于安装 FFmpeg）
 
-# 方式二：先克隆再运行
-git clone https://github.com/WEIFENG2333/VideoCaptioner.git
-cd VideoCaptioner
-./scripts/run.sh
-```
+#### 安装与运行
 
-脚本会自动：
-
-1. 安装 [uv](https://docs.astral.sh/uv/) 包管理器（如果未安装）
-2. 克隆项目到 `~/VideoCaptioner`（如果不在项目目录中运行）
-3. 安装所有 Python 依赖
-4. 启动应用
-
-<details>
-<summary>手动安装步骤</summary>
-
-#### 1. 安装 uv 包管理器
+**1. 安装 uv 包管理器**
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-#### 2. 安装系统依赖（macOS）
+安装完成后重新打开终端，或执行：
+
+```bash
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+```
+
+**2. 安装 FFmpeg**
 
 ```bash
 brew install ffmpeg
 ```
 
-#### 3. 克隆并运行
+**3. 克隆项目并安装依赖**
 
 ```bash
-git clone https://github.com/WEIFENG2333/VideoCaptioner.git
-cd VideoCaptioner
-uv sync          # 安装依赖
-uv run python main.py  # 运行
+git clone https://github.com/WEIFENG2333/VideoCaptionerForMac.git
+cd VideoCaptionerForMac
+uv sync
 ```
 
-</details>
+`uv sync` 会自动创建 `.venv` 虚拟环境并安装所有 Python 依赖。
+
+**4. 启动应用**
+
+```bash
+uv run python main.py
+```
+
+#### 后续配置
+
+- 首次启动后，在 **设置** 中配置 **LLM API Key**（OpenAI 兼容接口），用于字幕智能纠错、断句和翻译。
+- 首次使用本地语音识别时，应用会从 ModelScope 自动下载 faster-whisper 模型（tiny 模型约 75MB，large-v3 约 2.9GB），请确保网络通畅。
+- macOS 下语音识别仅支持 CPU 模式，处理速度取决于机器性能。
+
+#### 常见问题
+
+| 问题 | 解决方法 |
+|------|---------|
+| `uv: command not found` | 安装 uv 后需重启终端，或将 `~/.local/bin` 添加到 PATH |
+| `ffmpeg not found` | 执行 `brew install ffmpeg` |
+| `PyQt5` 相关报错 | 确认 Python 版本在 3.10~3.12 之间，`python3 --version` 检查 |
+| 窗口无法显示 | 确保在有图形界面的环境中运行（macOS 原生终端即可） |
+| 模型下载失败 | 检查网络连接，必要时配置代理 |
 
 ### 开发者指南
 
