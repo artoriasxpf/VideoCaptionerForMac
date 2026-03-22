@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -41,10 +42,14 @@ from app.core.entities import (
     VadMethodEnum,
 )
 from app.core.utils.platform_utils import open_folder
+from app.core.utils.logger import setup_logger
 from app.thread.file_download_thread import FileDownloadThread
 from app.thread.modelscope_download_thread import ModelscopeDownloadThread
 
 # 在文件开头添加常量定义
+
+logger = setup_logger("faster_whisper_setting")
+
 FASTER_WHISPER_PROGRAMS = [
     {
         "label": "GPU（cuda） + CPU 版本",
@@ -126,21 +131,56 @@ FASTER_WHISPER_MODELS = [
 def check_faster_whisper_exists() -> tuple[bool, list[str]]:
     """检查 faster-whisper 程序是否存在
 
-    检查以下两种情况:
-    1. bin目录下是否有 faster-whisper.exe
-    2. bin目录下是否有 Faster-Whisper-XXL/faster-whisper-xxl.exe
+    检查以下情况:
+    1. bin 目录下是否有 faster-whisper.exe (Windows)
+    2. bin 目录下是否有 Faster-Whisper-XXL/faster-whisper-xxl.exe (Windows)
+    3. macOS: 检查虚拟环境或系统环境中是否安装了 faster-whisper Python 包
 
     Returns:
-        tuple[bool, list[str]]: (是否存在程序, 已安装的版本列表)
+        tuple[bool, list[str]]: (是否存在程序，已安装的版本列表)
     """
+    from app.core.utils.platform_utils import is_linux, is_macos
+
     bin_path = Path(BIN_PATH)
     installed_versions = []
 
-    # 检查 faster-whisper.exe(CPU版本)
+    # macOS 检查 Python 包
+    if is_macos():
+        # 检查 faster-whisper Python 包是否安装
+        try:
+            # 尝试导入 faster_whisper 模块
+            from importlib.util import find_spec
+            faster_whisper_module = find_spec("faster_whisper")
+            if faster_whisper_module is not None:
+                # 已安装，默认支持 CPU，部分版本支持 GPU
+                installed_versions.append("CPU")
+                # 检查是否支持 CUDA（需要额外检查）
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        installed_versions.append("GPU")
+                except ImportError:
+                    pass
+        except Exception:
+            pass
+        installed_versions = list(set(installed_versions))
+        return bool(installed_versions), installed_versions
+
+    # Linux 检查系统命令
+    if is_linux():
+        if shutil.which("faster-whisper-xxl"):
+            installed_versions.extend(["GPU", "CPU"])
+        if shutil.which("faster-whisper"):
+            installed_versions.append("CPU")
+        installed_versions = list(set(installed_versions))
+        return bool(installed_versions), installed_versions
+
+    # Windows 检查 bin 目录
+    # 检查 faster-whisper.exe(CPU 版本)
     if (bin_path / "faster-whisper.exe").exists():
         installed_versions.append("CPU")
 
-    # 检查 Faster-Whisper-XXL/faster-whisper-xxl.exe(GPU版本)
+    # 检查 Faster-Whisper-XXL/faster-whisper-xxl.exe(GPU 版本)
     xxl_path = bin_path / "Faster-Whisper-XXL" / "faster-whisper-xxl.exe"
     if xxl_path.exists():
         installed_versions.extend(["GPU", "CPU"])
@@ -162,19 +202,175 @@ class UnzipThread(QThread):
         self.extract_path = extract_path
 
     def run(self):
+        """执行 7z 解压"""
         try:
-            subprocess.run(
-                ["7z", "x", self.zip_file, f"-o{self.extract_path}", "-y"],
-                check=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            seven_zip_path = Path(BIN_PATH) / "7z.exe"
+            if not seven_zip_path.exists():
+                seven_zip_path = shutil.which("7z")
+            if not seven_zip_path:
+                self.error.emit(self.tr("未找到 7z 解压工具"))
+                return
+
+            cmd = [
+                str(seven_zip_path),
+                "x",
+                "-y",
+                f"-o{self.extract_path}",
+                self.zip_file,
+            ]
+            logger.info(f"执行解压命令：{' '.join(cmd)}")
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
             )
-            # 删除压缩包
-            os.remove(self.zip_file)
-            self.finished.emit()
-        except subprocess.CalledProcessError as e:
-            self.error.emit(f"解压失败: {str(e)}")
+            stdout, _ = process.communicate()
+            if process.returncode != 0:
+                self.error.emit(self.tr("解压失败：{}").format(stdout))
+            else:
+                self.finished.emit()
         except Exception as e:
+            logger.exception(f"解压异常：{e}")
             self.error.emit(str(e))
+
+
+class PipInstallThread(QThread):
+    """pip 安装线程"""
+
+    progress = pyqtSignal(int, str)  # 进度信号 (进度值, 状态消息)
+    finished = pyqtSignal()  # 安装完成信号
+    error = pyqtSignal(str)  # 安装错误信号
+
+    def __init__(self, package_name: str, upgrade: bool = False):
+        super().__init__()
+        self.package_name = package_name
+        self.upgrade = upgrade
+        self.process = None
+        self._cancelled = False
+
+    def run(self):
+        """执行 pip 安装（支持 uv 和传统 pip）"""
+        try:
+            import sys
+
+            venv_bin = os.path.dirname(sys.executable)
+            uv_path = os.path.join(venv_bin, "uv")
+
+            # 1. 优先使用 uv
+            if os.path.exists(uv_path):
+                cmd = [
+                    uv_path,
+                    "pip",
+                    "install",
+                    self.package_name,
+                    "--no-cache",
+                ]
+                logger.info(f"使用 uv pip 安装：{' '.join(cmd)}")
+            else:
+                # 2. 尝试找到 venv 中的 pip
+                pip_executable = None
+                for name in ("pip", "pip3", "pip3.exe"):
+                    candidate = os.path.join(venv_bin, name)
+                    if os.path.exists(candidate):
+                        pip_executable = candidate
+                        break
+
+                # 3. venv 中没有 pip，先用 ensurepip 引导安装
+                if not pip_executable:
+                    logger.info("venv 中未找到 pip，尝试使用 ensurepip 引导安装")
+                    self.progress.emit(5, self.tr("正在引导安装 pip..."))
+                    bootstrap = subprocess.run(
+                        [sys.executable, "-m", "ensurepip", "--upgrade"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                    if bootstrap.returncode != 0:
+                        self.error.emit(
+                            self.tr("无法安装 pip：{}").format(bootstrap.stdout)
+                        )
+                        return
+                    # 引导成功后重新查找
+                    for name in ("pip", "pip3", "pip3.exe"):
+                        candidate = os.path.join(venv_bin, name)
+                        if os.path.exists(candidate):
+                            pip_executable = candidate
+                            break
+
+                if not pip_executable:
+                    self.error.emit(self.tr("无法找到或安装 pip"))
+                    return
+
+                cmd = [
+                    pip_executable,
+                    "install",
+                    self.package_name,
+                    "--no-cache-dir",
+                ]
+                logger.info(f"使用 pip 安装：{' '.join(cmd)}")
+
+            if self.upgrade:
+                cmd.append("--upgrade")
+
+            self.progress.emit(0, self.tr("开始安装 faster-whisper..."))
+
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+            )
+
+            progress_lines = []
+            while True:
+                if self._cancelled:
+                    self.process.terminate()
+                    self.error.emit(self.tr("安装已取消"))
+                    return
+
+                line = self.process.stdout.readline()
+                if not line and self.process.poll() is not None:
+                    break
+
+                if line:
+                    line = line.strip()
+                    progress_lines.append(line)
+                    logger.info(f"pip: {line}")
+
+                    if "Collecting" in line or "Resolved" in line:
+                        self.progress.emit(
+                            10, self.tr("正在下载 {}...").format(self.package_name)
+                        )
+                    elif "Downloading" in line or "Downloaded" in line:
+                        self.progress.emit(30, self.tr("正在下载依赖包..."))
+                    elif "Preparing" in line or "Installing" in line:
+                        self.progress.emit(70, self.tr("正在安装 faster-whisper..."))
+                    elif "Successfully installed" in line or "Installed" in line:
+                        self.progress.emit(100, self.tr("安装完成"))
+
+            returncode = self.process.poll()
+            if returncode != 0:
+                error_msg = "\n".join(progress_lines)
+                logger.error(f"pip 安装失败：{error_msg}")
+                self.error.emit(self.tr("安装失败：{}").format(error_msg))
+            else:
+                self.progress.emit(100, self.tr("安装成功"))
+                self.finished.emit()
+
+        except Exception as e:
+            logger.exception(f"pip 安装异常：{e}")
+            self.error.emit(str(e))
+
+    def cancel(self):
+        """取消安装"""
+        self._cancelled = True
+        if self.process:
+            self.process.terminate()
 
 
 class FasterWhisperDownloadDialog(MessageBoxBase):
@@ -238,9 +434,17 @@ class FasterWhisperDownloadDialog(MessageBoxBase):
                 desc_label = BodyLabel(self.tr("您可以继续下载其他版本:"), self)
                 layout.addWidget(desc_label)
         else:
-            desc_label = BodyLabel(self.tr("未下载Faster Whisper 程序"), self)
-            layout.addWidget(desc_label)
-
+            # macOS 平台显示特殊提示
+            from app.core.utils.platform_utils import is_macos
+            if is_macos():
+                desc_label = BodyLabel(self.tr("未安装 Faster Whisper 程序"), self)
+                layout.addWidget(desc_label)
+                macos_note = BodyLabel(self.tr("macOS 用户请点击下方按钮使用 pip 安装 faster-whisper"), self)
+                macos_note.setStyleSheet("color: #666; font-size: 12px")
+                layout.addWidget(macos_note)
+            else:
+                desc_label = BodyLabel(self.tr("未下载 Faster Whisper 程序"), self)
+                layout.addWidget(desc_label)
         # 下载控件
         program_layout = QHBoxLayout()
         self.program_combo = ComboBox(self)
@@ -384,12 +588,77 @@ class FasterWhisperDownloadDialog(MessageBoxBase):
         button_layout.addStretch()
         self.model_table.setCellWidget(row, 3, button_container)
 
+    def _download_model(self, row: int):
+        """下载指定行的模型"""
+        model = FASTER_WHISPER_MODELS[row]
+
+        # 检查是否已下载
+        model_path = os.path.join(MODEL_PATH, model["value"])
+        model_bin_path = os.path.join(model_path, "model.bin")
+        if os.path.exists(model_bin_path):
+            from qfluentwidgets import MessageBox
+            msg_box = MessageBox(
+                self.tr("确认重新下载"),
+                self.tr("模型 {} 已下载，是否重新下载？").format(model["label"]),
+                self,
+            )
+            if not msg_box.exec_():
+                return
+
+        # 显示进度条
+        self.progress_bar.show()
+        self.progress_label.show()
+        self._set_all_download_buttons_enabled(False)
+
+        # 使用 ModelScope 下载模型
+        model_id = model["modelScopeLink"]
+        local_dir = str(model_path)
+
+        self.model_download_thread = ModelscopeDownloadThread(model_id, local_dir)
+        self.model_download_thread.progress.connect(
+            self._on_model_download_progress
+        )
+        self.model_download_thread.finished.connect(
+            self._on_model_download_finished
+        )
+        self.model_download_thread.error.connect(
+            self._on_model_download_error
+        )
+        self.model_download_thread.start()
+
+    def _on_model_download_progress(self, value, status_msg):
+        """更新模型下载进度"""
+        self.progress_bar.setValue(int(value))
+        self.progress_label.setText(status_msg)
+
+    def _on_model_download_finished(self):
+        """模型下载完成处理"""
+        InfoBar.success(
+            self.tr("下载完成"),
+            self.tr("模型下载成功"),
+            duration=3000,
+            parent=self,
+        )
+        self.progress_bar.hide()
+        self.progress_label.hide()
+        self._set_all_download_buttons_enabled(True)
+        self._populate_model_table()
+
+    def _on_model_download_error(self, error):
+        """模型下载错误处理"""
+        InfoBar.error(self.tr("下载失败"), error, duration=3000, parent=self)
+        self.progress_bar.hide()
+        self.progress_label.hide()
+        self._set_all_download_buttons_enabled(True)
+
     def _connect_signals(self):
         """连接信号"""
         self.rejected.connect(self._on_dialog_reject)
 
     def _start_download(self):
-        """开始下载"""
+        """开始下载/安装"""
+        from app.core.utils.platform_utils import is_macos
+
         if FasterWhisperDownloadDialog.is_downloading:
             InfoBar.warning(
                 self.tr("下载进行中"),
@@ -409,6 +678,42 @@ class FasterWhisperDownloadDialog(MessageBoxBase):
         # 从显示文本中提取程序标签
         selected_label = selected_text.split(" (")[0]
 
+        # macOS 平台：使用 pip 安装 faster-whisper
+        if is_macos():
+            self._start_pip_install(selected_label)
+            return
+
+        # Windows 平台：下载可执行文件
+        self._start_windows_download(selected_label)
+
+    def _start_pip_install(self, selected_label: str):
+        """macOS 平台：使用 pip 安装 faster-whisper"""
+        # 确保 BIN_PATH 目录存在
+        os.makedirs(BIN_PATH, exist_ok=True)
+
+        self.progress_bar.show()
+        self.progress_label.show()
+        self.program_download_btn.setEnabled(False)
+        self.program_combo.setEnabled(False)
+
+        # 根据标签选择安装的包
+        # 目前 faster-whisper 包同时支持 CPU 和 GPU（如果有 CUDA）
+        package_name = "faster-whisper"
+
+        self.program_install_thread = PipInstallThread(
+            package_name, upgrade=False
+        )
+        self.program_install_thread.progress.connect(
+            self._on_program_download_progress
+        )
+        self.program_install_thread.finished.connect(
+            self._on_program_install_finished
+        )
+        self.program_install_thread.error.connect(self._on_program_download_error)
+        self.program_install_thread.start()
+
+    def _start_windows_download(self, selected_label: str):
+        """Windows 平台：下载可执行文件"""
         # 根据标签找到对应的程序配置
         program = next(
             (p for p in FASTER_WHISPER_PROGRAMS if p["label"] == selected_label), None
@@ -433,7 +738,7 @@ class FasterWhisperDownloadDialog(MessageBoxBase):
         self.program_download_btn.setEnabled(False)
         self.program_combo.setEnabled(False)
 
-        # 直接下载到bin目录
+        # 直接下载到 bin 目录
         save_path = os.path.join(BIN_PATH, program["value"])
 
         self.program_download_thread = FileDownloadThread(
@@ -476,6 +781,25 @@ class FasterWhisperDownloadDialog(MessageBoxBase):
             InfoBar.error(self.tr("安装失败"), str(e), duration=3000, parent=self)
             self._cleanup_installation()
 
+    def _finish_program_installation(self):
+        """程序安装/解压完成处理（Windows）"""
+        try:
+            InfoBar.success(
+                self.tr("安装成功"),
+                self.tr("Faster Whisper 程序已安装成功"),
+                duration=3000,
+                parent=self,
+            )
+            self._cleanup_installation()
+        except Exception as e:
+            InfoBar.error(self.tr("安装失败"), str(e), duration=3000, parent=self)
+            self._cleanup_installation()
+
+    def _on_unzip_error(self, error):
+        """解压错误处理"""
+        InfoBar.error(self.tr("解压失败"), error, duration=3000, parent=self)
+        self._cleanup_installation()
+
     def _on_program_download_error(self, error):
         """程序下载错误处理"""
         InfoBar.error(self.tr("下载失败"), error, duration=3000, parent=self)
@@ -485,6 +809,39 @@ class FasterWhisperDownloadDialog(MessageBoxBase):
         self.program_combo.setEnabled(True)
         self.progress_bar.hide()
         self.progress_label.hide()
+
+
+    def _on_program_install_finished(self):
+        """程序安装完成处理（macOS pip 安装）"""
+        try:
+            InfoBar.success(
+                self.tr("安装成功"),
+                self.tr("Faster Whisper 程序已安装成功"),
+                duration=3000,
+                parent=self,
+            )
+            self._cleanup_installation()
+        except Exception as e:
+            InfoBar.error(self.tr("安装失败"), str(e), duration=3000, parent=self)
+            self._cleanup_installation()
+    def _cleanup_installation(self):
+        """清理安装状态"""
+        FasterWhisperDownloadDialog.is_downloading = False
+        self._set_all_download_buttons_enabled(True)
+        self.program_download_btn.setEnabled(True)
+        self.program_combo.setEnabled(True)
+        self.progress_bar.hide()
+        self.progress_label.hide()
+
+
+
+    def _open_program_folder(self):
+        """打开程序文件夹"""
+        open_folder(str(BIN_PATH))
+
+    def _open_model_folder(self):
+        """打开模型文件夹"""
+        open_folder(str(MODEL_PATH))
 
     def _on_dialog_reject(self):
         """对话框关闭处理"""
@@ -499,110 +856,6 @@ class FasterWhisperDownloadDialog(MessageBoxBase):
         """窗口关闭事件处理"""
         self._on_dialog_reject()
         super().closeEvent(event)
-
-    def _download_model(self, row):
-        """下载选中的模型"""
-        if FasterWhisperDownloadDialog.is_downloading:
-            InfoBar.warning(
-                self.tr("下载进行中"),
-                self.tr("请等待当前下载任务完成"),
-                duration=3000,
-                parent=self,
-            )
-            return
-
-        FasterWhisperDownloadDialog.is_downloading = True
-        self._set_all_download_buttons_enabled(False)
-
-        model = FASTER_WHISPER_MODELS[row]
-        self.progress_bar.show()
-        self.progress_label.show()
-        self.progress_label.setText(self.tr(f"正在下载 {model['label']} 模型..."))
-
-        # 禁用当前行的下载按钮
-        button_container = self.model_table.cellWidget(row, 3)
-        download_btn = button_container.findChild(HyperlinkButton)
-        if download_btn:
-            download_btn.setEnabled(False)
-
-        # 创建并启动下载线程，保存到类属性
-        self.model_download_thread = ModelscopeDownloadThread(
-            model["modelScopeLink"], os.path.join(MODEL_PATH, model["value"])
-        )
-
-        def _on_model_download_progress(value, msg):
-            self.progress_bar.setValue(value)
-            self.progress_label.setText(msg)
-
-        def _on_model_download_finished():
-            FasterWhisperDownloadDialog.is_downloading = False
-            self._set_all_download_buttons_enabled(True)
-            # 更新状态
-            status_item = QTableWidgetItem(self.tr("已下载"))
-            status_item.setForeground(Qt.green)  # type: ignore
-            status_item.setTextAlignment(Qt.AlignCenter)  # type: ignore
-            self.model_table.setItem(row, 2, status_item)
-
-            # 更新下载按钮文本
-            if download_btn:
-                download_btn.setText(self.tr("重新下载"))
-                download_btn.setEnabled(True)
-
-            model = FASTER_WHISPER_MODELS[row]
-
-            # 更新主设置对话框的模型选择
-            if self.setting_widget:
-                # 保存当前值并清空
-                current_value = cfg.faster_whisper_model.value
-                combo = self.setting_widget.model_card.comboBox
-                combo.clear()
-
-                # 找出已下载的模型
-                available = []
-                model_map = {
-                    m["label"].lower(): m["value"] for m in FASTER_WHISPER_MODELS
-                }
-                for enum_val in FasterWhisperModelEnum:
-                    if enum_val.value in model_map:
-                        if (MODEL_PATH / model_map[enum_val.value]).exists():
-                            available.append(enum_val)
-
-                # 重建下拉框
-                self.setting_widget.model_card.optionToText = {
-                    e: e.value for e in available
-                }
-                for enum_val in available:
-                    combo.addItem(enum_val.value, userData=enum_val)
-
-                # 恢复选择
-                if current_value in available:
-                    combo.setCurrentText(current_value.value)
-                elif combo.count() > 0:
-                    combo.setCurrentIndex(0)
-
-            InfoBar.success(
-                self.tr("下载成功"),
-                self.tr(f"{model['label']} 模型已下载完成"),
-                duration=3000,
-                parent=self,
-            )
-            self.progress_bar.hide()
-            self.progress_label.hide()
-
-        def _on_model_download_error(error):
-            FasterWhisperDownloadDialog.is_downloading = False
-            self._set_all_download_buttons_enabled(True)
-            if download_btn:
-                download_btn.setEnabled(True)
-
-            InfoBar.error(self.tr("下载失败"), str(error), duration=3000, parent=self)
-            self.progress_bar.hide()
-            self.progress_label.hide()
-
-        self.model_download_thread.progress.connect(_on_model_download_progress)
-        self.model_download_thread.finished.connect(_on_model_download_finished)
-        self.model_download_thread.error.connect(_on_model_download_error)
-        self.model_download_thread.start()
 
     def _set_all_download_buttons_enabled(self, enabled: bool):
         """设置所有下载按钮的启用状态"""
@@ -619,56 +872,27 @@ class FasterWhisperDownloadDialog(MessageBoxBase):
                 if download_btn:
                     download_btn.setEnabled(enabled)
 
-    def _open_model_folder(self):
-        """打开模型文件夹"""
-        if os.path.exists(MODEL_PATH):
-            # 根据操作系统打开文件夹
-            open_folder(str(MODEL_PATH))
-
-    def _open_program_folder(self):
-        """打开程序文件夹"""
-        if os.path.exists(BIN_PATH):
-            # 根据操作系统打开文件夹
-            open_folder(str(BIN_PATH))
-
-    def _finish_program_installation(self):
-        """完成程序安装"""
-        InfoBar.success(
-            self.tr("安装完成"),
-            self.tr("Faster Whisper 程序已安装成功"),
-            duration=3000,
-            parent=self,
-        )
-        self.accept()
-        self._cleanup_installation()
-
-    def _on_unzip_error(self, error_msg):
-        """处理解压错误"""
-        InfoBar.error(self.tr("安装失败"), error_msg, duration=3000, parent=self)
-        self._cleanup_installation()
-
-    def _cleanup_installation(self):
-        """清理安装状态"""
-        FasterWhisperDownloadDialog.is_downloading = False
-        self._set_all_download_buttons_enabled(True)
-        self.progress_bar.hide()
-        self.progress_label.hide()
-
-
 class FasterWhisperSettingWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setup_ui()
         self._connect_signals()
-
     def showEvent(self, a0: QShowEvent) -> None:
         super().showEvent(a0)
-        # 检查Faster Whisper模型是否存在
+        from app.core.utils.platform_utils import is_macos
+        # macOS 上不需要检查程序（使用 Python API）
+        # 设置模型目录，让 Python API 知道从哪里加载 UI 下载的模型
+        if is_macos():
+            cfg.faster_whisper_model_dir.value = str(MODEL_PATH)
+            return
+
+        # Windows 上检查程序是否存在
         is_faster_whisper_exists, _ = check_faster_whisper_exists()
         if not is_faster_whisper_exists:
-            self.show_error_info(self.tr("Faster Whisper程序不存在，请先下载程序"))
+            self.show_error_info(self.tr("Faster Whisper 程序不存在，请先下载程序"))
             self._show_model_manager()
         return
+
 
     def setup_ui(self):
         self.main_layout = QVBoxLayout(self)
@@ -904,7 +1128,7 @@ class FasterWhisperSettingWidget(QWidget):
         model_path = MODEL_PATH / model_config["value"]
         model_files = model_path / "model.bin"
         # 检查模型文件是否存在
-        if not model_path.exists() and not model_files.exists():
+        if not model_path.exists() or not model_files.exists():
             self.show_error_info(self.tr("模型文件不存在: ") + model_value)
             return False
         return True

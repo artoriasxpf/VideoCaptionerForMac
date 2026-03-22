@@ -1,7 +1,8 @@
 from app.core.asr.asr_data import ASRData
 from app.core.asr.bcut import BcutASR
 from app.core.asr.chunked_asr import ChunkedASR
-from app.core.asr.faster_whisper import FasterWhisperASR
+from app.core.asr.faster_whisper import FasterWhisperASR, FasterWhisperPythonASR
+from app.core.utils.platform_utils import is_macos
 from app.core.asr.jianying import JianYingASR
 from app.core.asr.whisper_api import WhisperAPI
 from app.core.asr.whisper_cpp import WhisperCppASR
@@ -128,6 +129,30 @@ def _create_whisper_api_asr(audio_path: str, config: TranscribeConfig) -> Chunke
 
 def _create_faster_whisper_asr(audio_path: str, config: TranscribeConfig) -> ChunkedASR:
     """Create FasterWhisper ASR instance with chunking support."""
+    # macOS 上使用 Python API（faster-whisper pip 包没有 CLI）
+    if is_macos():
+        asr_kwargs = {
+            "use_cache": True,
+            "need_word_time_stamp": config.need_word_time_stamp,
+            "language": config.transcribe_language,
+            "whisper_model": (
+                config.faster_whisper_model.value if config.faster_whisper_model else "base"
+            ),
+            "model_dir": config.faster_whisper_model_dir or "",
+            "device": config.faster_whisper_device,
+            "vad_filter": config.faster_whisper_vad_filter,
+            "vad_threshold": config.faster_whisper_vad_threshold,
+            "prompt": config.faster_whisper_prompt,
+        }
+        return ChunkedASR(
+            asr_class=FasterWhisperPythonASR,
+            audio_path=audio_path,
+            asr_kwargs=asr_kwargs,
+            chunk_concurrency=1,
+            chunk_length=60 * 20,
+        )
+
+    # Windows/Linux 使用 CLI
     asr_kwargs = {
         "use_cache": True,
         "need_word_time_stamp": config.need_word_time_stamp,

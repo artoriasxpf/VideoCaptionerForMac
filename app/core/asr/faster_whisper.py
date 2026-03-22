@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Union
@@ -16,6 +17,18 @@ from .base import BaseASR
 from .status import ASRStatus
 
 logger = setup_logger("faster_whisper")
+
+# Faster Whisper 模型映射表 (模型名 -> ModelScope ID)
+FASTER_WHISPER_MODELS_MAP = {
+    "tiny": "pengzhendong/faster-whisper-tiny",
+    "base": "pengzhendong/faster-whisper-base",
+    "small": "pengzhendong/faster-whisper-small",
+    "medium": "pengzhendong/faster-whisper-medium",
+    "large-v1": "pengzhendong/faster-whisper-large-v1",
+    "large-v2": "pengzhendong/faster-whisper-large-v2",
+    "large-v3": "pengzhendong/faster-whisper-large-v3",
+    "large-v3-turbo": "pengzhendong/faster-whisper-large-v3-turbo",
+}
 
 
 class FasterWhisperASR(BaseASR):
@@ -51,6 +64,7 @@ class FasterWhisperASR(BaseASR):
         max_comma: int = 20,
         max_comma_cent: int = 50,
         prompt: Optional[str] = None,
+        download_callback: Optional[Callable[[int, str], None]] = None,
     ):
         super().__init__(audio_input, use_cache)
 
@@ -80,6 +94,7 @@ class FasterWhisperASR(BaseASR):
         self.max_comma = max_comma
         self.max_comma_cent = max_comma_cent
         self.prompt = prompt
+        self.download_callback = download_callback
 
         self.process = None
 
@@ -96,6 +111,9 @@ class FasterWhisperASR(BaseASR):
             self.one_word = 0
             self.sentence = True
 
+        # 检查并下载模型
+        self._ensure_model_exists()
+
         # 根据设备选择程序
         if self.device == "cpu":
             if shutil.which("faster-whisper-xxl"):
@@ -111,6 +129,126 @@ class FasterWhisperASR(BaseASR):
                     "faster-whisper-xxl 程序未找到，请确保已经下载。"
                 )
             self.faster_whisper_program = "faster-whisper-xxl"
+
+    def _ensure_model_exists(self):
+        """检查模型是否存在，如果不存在则下载。
+        
+        Mac 环境下使用 ModelScope 下载 faster-whisper 模型。
+        模型会下载到 self.model_dir 指定的目录。
+        """
+        if not self.model_dir:
+            logger.warning("未指定 model_dir，无法检查/下载模型")
+            return
+        
+        model_name = self._get_model_name_from_path()
+        if not model_name:
+            logger.warning(f"无法从 model_path 解析模型名：{self.model_path}")
+            return
+        
+        # 检查模型是否已下载
+        if self._check_model_exists(model_name):
+            logger.info(f"模型 {model_name} 已存在，无需下载")
+            return
+        
+        # 下载模型
+        logger.info(f"开始下载模型：{model_name}")
+        try:
+            self._download_model(model_name)
+            logger.info(f"模型 {model_name} 下载完成")
+        except Exception as e:
+            logger.error(f"模型下载失败：{e}")
+            raise RuntimeError(f"模型 {model_name} 下载失败：{e}")
+
+    def _get_model_name_from_path(self) -> Optional[str]:
+        """从 model_path 提取模型名称。
+        
+        支持两种格式:
+        1. 模型名：如 "tiny", "base", "small" 等
+        2. 模型目录路径：如 "/path/to/faster-whisper-tiny"
+        
+        Returns:
+            模型名称 (tiny/base/small 等)，如果无法解析则返回 None
+        """
+        model_path_str = str(self.model_path).lower()
+        
+        # 检查是否是预定义的模型名
+        for name in FASTER_WHISPER_MODELS_MAP.keys():
+            if model_path_str == name or model_path_str.endswith(f"faster-whisper-{name}"):
+                return name
+        
+        # 尝试从路径中提取模型名
+        path = Path(self.model_path)
+        path_name = path.name.lower()
+        for name in FASTER_WHISPER_MODELS_MAP.keys():
+            if f"faster-whisper-{name}" in path_name:
+                return name
+        
+        return None
+
+    def _check_model_exists(self, model_name: str) -> bool:
+        """检查指定模型是否已下载。
+        
+        Args:
+            model_name: 模型名称 (如 "tiny", "base" 等)
+            
+        Returns:
+            True 如果模型已存在，False 否则
+        """
+        if not self.model_dir:
+            return False
+        
+        model_dir = Path(self.model_dir) / f"faster-whisper-{model_name}"
+        if not model_dir.exists():
+            return False
+        
+        # 检查关键文件是否存在 (config.json 是 faster-whisper 模型的必需文件)
+        config_file = model_dir / "config.json"
+        return config_file.exists()
+
+    def _download_model(self, model_name: str):
+        """使用 ModelScope 下载指定模型。
+        
+        Args:
+            model_name: 模型名称 (如 "tiny", "base" 等)
+            
+        Raises:
+            RuntimeError: 下载失败时抛出异常
+        """
+        if model_name not in FASTER_WHISPER_MODELS_MAP:
+            raise ValueError(f"不支持的模型：{model_name}")
+        
+        model_id = FASTER_WHISPER_MODELS_MAP[model_name]
+        save_path = str(Path(self.model_dir) / f"faster-whisper-{model_name}")
+        
+        logger.info(f"从 ModelScope 下载模型：{model_id} -> {save_path}")
+        
+        try:
+            # 导入 modelscope
+            from modelscope.hub.snapshot_download import snapshot_download
+            
+            # 创建进度回调包装器
+            def _progress_callback(progress: int, message: str):
+                if self.download_callback:
+                    self.download_callback(progress, message)
+                logger.info(f"下载进度：{message}")
+            
+            # 调用 ModelScope 下载
+            snapshot_download(
+                model_id,
+                local_dir=save_path,
+            )
+            
+            # 下载完成后通知回调
+            if self.download_callback:
+                self.download_callback(100, "下载完成")
+                
+        except ImportError:
+            raise RuntimeError(
+                "modelscope 未安装，请运行：pip install modelscope"
+            )
+        except Exception as e:
+            logger.error(f"ModelScope 下载失败：{e}")
+            raise RuntimeError(f"模型下载失败：{e}")
 
     def _build_command(self, audio_input: str) -> List[str]:
         """Build command line arguments for faster-whisper."""
@@ -325,6 +463,180 @@ class FasterWhisperASR(BaseASR):
         cmd = self._build_command("")
         cmd_hash = hashlib.md5(str(cmd).encode()).hexdigest()
         return f"{self.crc32_hex}-{cmd_hash}"
+
+
+class FasterWhisperPythonASR(BaseASR):
+    """Faster-Whisper ASR using the Python API directly.
+
+    Used on macOS (and any platform) where the faster-whisper-xxl CLI
+    binary is not available but the `faster-whisper` Python package is
+    installed via pip.
+    """
+
+    def __init__(
+        self,
+        audio_input: Union[str, bytes],
+        whisper_model: str,
+        model_dir: str,
+        language: str = "zh",
+        device: str = "cpu",
+        use_cache: bool = False,
+        need_word_time_stamp: bool = False,
+        vad_filter: bool = True,
+        vad_threshold: float = 0.4,
+        prompt: Optional[str] = None,
+        download_callback: Optional[Callable[[int, str], None]] = None,
+        **kwargs,
+    ):
+        super().__init__(audio_input, use_cache)
+        self.whisper_model = whisper_model
+        self.model_dir = model_dir
+        self.language = language or ""  # empty string = auto-detect
+        self.device = device
+        self.need_word_time_stamp = need_word_time_stamp
+        self.vad_filter = vad_filter
+        self.vad_threshold = vad_threshold
+        self.prompt = prompt
+        self.download_callback = download_callback
+
+        # 检查并下载模型
+        self._ensure_model_exists()
+
+    def _get_model_name(self) -> Optional[str]:
+        model_path_str = str(self.whisper_model).lower()
+        for name in FASTER_WHISPER_MODELS_MAP.keys():
+            if model_path_str == name or model_path_str.endswith(f"faster-whisper-{name}"):
+                return name
+        path = Path(self.whisper_model)
+        for name in FASTER_WHISPER_MODELS_MAP.keys():
+            if f"faster-whisper-{name}" in path.name.lower():
+                return name
+        return None
+
+    def _ensure_model_exists(self):
+        if not self.model_dir:
+            return
+        model_name = self._get_model_name()
+        if not model_name:
+            logger.warning(f"无法解析模型名：{self.whisper_model}")
+            return
+        model_path = Path(self.model_dir) / f"faster-whisper-{model_name}"
+        if (model_path / "config.json").exists():
+            return
+        # 下载模型
+        logger.info(f"开始下载模型：{model_name}")
+        model_id = FASTER_WHISPER_MODELS_MAP[model_name]
+        try:
+            from modelscope.hub.snapshot_download import snapshot_download
+            snapshot_download(model_id, local_dir=str(model_path))
+            if self.download_callback:
+                self.download_callback(100, "下载完成")
+        except ImportError:
+            raise RuntimeError("modelscope 未安装，请运行：pip install modelscope")
+        except Exception as e:
+            raise RuntimeError(f"模型 {model_name} 下载失败：{e}")
+
+    def _get_model_path(self) -> str:
+        """获取模型的本地路径。"""
+        model_name = self._get_model_name()
+        if model_name and self.model_dir:
+            model_path = Path(self.model_dir) / f"faster-whisper-{model_name}"
+            if model_path.exists():
+                return str(model_path)
+        return self.whisper_model
+
+    def _run(
+        self, callback: Optional[Callable[[int, str], None]] = None, **kwargs: Any
+    ) -> str:
+        from faster_whisper import WhisperModel
+
+        if callback is None:
+            callback = lambda x, y: None
+
+        model_path = self._get_model_path()
+        compute_type = "int8"
+
+        callback(*ASRStatus.TRANSCRIBING.with_progress(5))
+        logger.info(f"加载 faster-whisper 模型：{model_path} (device={self.device}, compute_type={compute_type})")
+
+        model = WhisperModel(
+            model_path,
+            device=self.device,
+            compute_type=compute_type,
+        )
+
+        callback(*ASRStatus.TRANSCRIBING.with_progress(10))
+        logger.info("开始转录")
+
+        # 如果是 bytes，写入临时文件
+        with tempfile.TemporaryDirectory() as temp_dir:
+            if isinstance(self.audio_input, str):
+                audio_path = self.audio_input
+            else:
+                wav_path = Path(temp_dir) / "audio.wav"
+                wav_path.write_bytes(self.file_binary)
+                audio_path = str(wav_path)
+
+            transcribe_opts = {
+                "language": self.language if self.language else None,
+                "vad_filter": self.vad_filter,
+                "vad_parameters": {"threshold": self.vad_threshold} if self.vad_filter else None,
+                "word_timestamps": self.need_word_time_stamp,
+            }
+            if self.prompt:
+                transcribe_opts["initial_prompt"] = self.prompt
+
+            segments_iter, info = model.transcribe(audio_path, **transcribe_opts)
+
+            # 将 generator 转为列表，并报告进度
+            segments_list = []
+            for seg in segments_iter:
+                segments_list.append(seg)
+                callback(*ASRStatus.TRANSCRIBING.with_progress(
+                    min(10 + int(len(segments_list) * 2), 95)
+                ))
+
+        # 转换为 SRT 格式文本，复用现有的 _make_segments
+        srt_lines = []
+        for i, seg in enumerate(segments_list, 1):
+            start = self._seconds_to_srt_ts(seg.start)
+            end = self._seconds_to_srt_ts(seg.end)
+            text = seg.text.strip()
+            srt_lines.append(f"{i}\n{start} --> {end}\n{text}\n")
+
+        callback(*ASRStatus.COMPLETED.callback_tuple())
+        return "\n".join(srt_lines)
+
+    @staticmethod
+    def _seconds_to_srt_ts(seconds: float) -> str:
+        """Convert seconds to SRT timestamp format (HH:MM:SS,mmm)"""
+        total_ms = int(seconds * 1000)
+        ms = total_ms % 1000
+        total_seconds = total_ms // 1000
+        s = total_seconds % 60
+        total_minutes = total_seconds // 60
+        m = total_minutes % 60
+        h = total_minutes // 60
+        return f"{h:02}:{m:02}:{s:02},{ms:03}"
+
+    def _make_segments(self, resp_data: str) -> list[ASRDataSeg]:
+        asr_data = ASRData.from_srt(resp_data)
+        hallucination_keywords = [
+            "请不吝点赞 订阅 转发",
+            "打赏支持明镜",
+        ]
+        filtered_segments = []
+        for seg in asr_data.segments:
+            text = seg.text.strip()
+            if text.startswith(("【", "[", "(", "（")):
+                continue
+            if any(keyword in text for keyword in hallucination_keywords):
+                continue
+            filtered_segments.append(seg)
+        return filtered_segments
+
+    def _get_key(self):
+        return f"{self.crc32_hex}-python-{self.whisper_model}-{self.language}"
 
 
 def is_rtx_50_series() -> bool:

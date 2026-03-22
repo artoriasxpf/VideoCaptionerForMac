@@ -19,7 +19,7 @@ from qfluentwidgets import (
 )
 
 from app.config import SETTINGS_PATH, WORK_PATH
-from app.core.utils.platform_utils import get_available_transcribe_models
+from app.core.utils.platform_utils import get_available_transcribe_models, is_macos
 
 from ..core.entities import (
     FasterWhisperModelEnum,
@@ -57,10 +57,10 @@ class LanguageSerializer(ConfigSerializer):
 
 
 class PlatformAwareTranscribeModelValidator(OptionsValidator):
-    """平台相关的转录模型验证器，在 macOS 上自动过滤掉 FasterWhisper"""
+    """平台相关的转录模型验证器"""
 
     def __init__(self):
-        # 不调用父类的 __init__，因为我们要自定义 options
+        # 所有平台都支持全部转录模型（包括 macOS 上的 FasterWhisper CPU 模式）
         self._options = get_available_transcribe_models()
 
     @property
@@ -188,7 +188,10 @@ class Config(QConfig):
     )
     faster_whisper_model_dir = ConfigItem("FasterWhisper", "ModelDir", "")
     faster_whisper_device = OptionsConfigItem(
-        "FasterWhisper", "Device", "cuda", OptionsValidator(["cuda", "cpu"])
+        "FasterWhisper", 
+        "Device", 
+        "cpu" if is_macos() else "cuda",  # macOS 默认 CPU，其他平台默认 CUDA
+        OptionsValidator(["cuda", "cpu"])
     )
     # VAD 参数
     faster_whisper_vad_filter = ConfigItem(

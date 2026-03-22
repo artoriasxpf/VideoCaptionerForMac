@@ -396,7 +396,7 @@ class TranscriptionInterface(QWidget):
         self.model_button.setMinimumWidth(180)
 
         self.model_menu = RoundMenu(parent=self)
-        # 只显示当前平台可用的模型（macOS 上不显示 FasterWhisper）
+        # 显示所有转录模型
         available_models = get_available_transcribe_models()
         for model in available_models:
             if (
